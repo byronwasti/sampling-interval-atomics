@@ -1,0 +1,12 @@
+[package]
+name = "adaptive-concurrent-sampling"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+metrics-util = "0.16.3"
+plotly = "0.8.4"
+plotters = "0.3.5"
+tokio = { version = "1.37.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17" }
