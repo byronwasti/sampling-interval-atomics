@@ -1,18 +1,22 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 use tracing_subscriber::FmtSubscriber;
 use tracing::info;
+use tokio::time;
+use std::collections::HashMap;
+use rand_distr::{SkewNormal, Distribution};
 
-const BASELINE_INTERVAL: Duration = Duration::from_secs(1);
+const N: usize = 100;
 
-const INTERVAL_SWEEP: [Duration; 3] = [
+const INTERVAL_SWEEP: [Duration; 4] = [
+    Duration::from_millis(1000),
     Duration::from_millis(500),
-    //Duration::from_millis(100),
+    Duration::from_millis(100),
     Duration::from_millis(10),
     //Duration::from_millis(1),
     //Duration::from_micros(100),
     //Duration::from_micros(10),
-    Duration::from_micros(1),
+    //Duration::from_micros(1),
     //Duration::from_nanos(1),
 ];
 
@@ -20,77 +24,50 @@ const INTERVAL_SWEEP: [Duration; 3] = [
 async fn main() {
     FmtSubscriber::builder().init();
 
-    let data = collect_data(100, Duration::from_millis(10)).await;
-    println!("{data:?}");
+    let data = collect_data(100, (Duration::from_millis(10), Duration::from_millis(4))).await;
+    plot(data);
 }
 
-async fn collect_data(task_count: usize, delay: Duration) -> Vec<(f64, f64)> {
-    let b_atomic = Arc::new(AtomicU64::new(0));
+async fn collect_data(task_count: usize, delay: (Duration, Duration)) -> HashMap<Duration, Vec<f64>> {
     let s_atomic = Arc::new(AtomicU64::new(0));
     let mut handles = vec![];
 
     for _ in 0..task_count {
-        let b_atomic = b_atomic.clone();
         let s_atomic = s_atomic.clone();
         let handle = tokio::spawn(async move {
-            task(delay, b_atomic, s_atomic).await;
+            task(delay.0, delay.1, s_atomic).await;
         });
         handles.push(handle);
     }
 
-    let mut data = vec![];
+    let mut data = HashMap::new();
     for sample_interval in INTERVAL_SWEEP {
         // NOTE: Have to reset the atomics otherwise we get some weird data issues.
-        b_atomic.store(0, Ordering::Relaxed);
         s_atomic.store(0, Ordering::Relaxed);
 
-        let start = Instant::now();
-        let mut b_timer = Instant::now();
-        let mut s_timer = Instant::now();
+        let mut s_timer = Timer::new(sample_interval).await;
 
-        let mut b_vals = vec![];
         let mut s_vals = vec![];
 
         loop {
-            if start.elapsed() > Duration::from_secs(10) {
+            let elapsed = s_timer.tick().await;
+
+            let val = s_atomic.swap(0, Ordering::Relaxed);
+            let tps = val as f64 / elapsed.as_secs_f64();
+            s_vals.push(tps);
+
+            if s_vals.len() >= N {
                 break
-            }
-
-            if b_timer.elapsed() > BASELINE_INTERVAL {
-                b_timer = Instant::now();
-                let val = b_atomic.swap(0, Ordering::Relaxed);
-                let tps = if val != 0 {
-                    val as f64 / BASELINE_INTERVAL.as_secs_f64()
-                } else {
-                    0.
-                };
-                b_vals.push(tps);
-            }
-
-            if s_timer.elapsed() > sample_interval {
-                s_timer = Instant::now();
-                let val = s_atomic.swap(0, Ordering::Relaxed);
-                let tps = if val != 0 {
-                    val as f64 / sample_interval.as_secs_f64()
-                } else {
-                    0.
-                };
-                s_vals.push(tps);
             }
         }
 
         info!("{sample_interval:?}");
-        info!("b_vals: {b_vals:?}");
         info!("s_vals: {:?}..{:?}", &s_vals[..5], &s_vals[s_vals.len() - 5..]);
 
-        let (b_mean, b_std) = avg_tps(&b_vals);
         let (s_mean, s_std) = avg_tps(&s_vals);
-        info!("b_tps: {b_mean}, std: {b_std}");
         info!("s_tps: {s_mean}, std: {s_std}");
 
-        let err_per = ((b_mean - s_mean) / b_mean) * 100.;
-        info!("err: {err_per}%");
-        data.push((sample_interval.as_secs_f64(), err_per));
+        data.insert(sample_interval, s_vals);
     }
 
     for handle in &handles {
@@ -104,10 +81,12 @@ async fn collect_data(task_count: usize, delay: Duration) -> Vec<(f64, f64)> {
     data
 }
 
-async fn task(delay: Duration, b_atomic: Arc<AtomicU64>, s_atomic: Arc<AtomicU64>) {
+async fn task(delay: Duration, std: Duration, s_atomic: Arc<AtomicU64>) {
     loop {
-        tokio::time::sleep(delay).await;
-        b_atomic.fetch_add(1, Ordering::Relaxed);
+        let normal =
+            SkewNormal::new(delay.as_secs_f64(), std.as_secs_f64(), 20.).unwrap();
+        let v: f64 = normal.sample(&mut rand::thread_rng()).max(0.);
+        tokio::time::sleep(std::time::Duration::from_secs_f64(v)).await;
         s_atomic.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -123,3 +102,52 @@ fn avg_tps(samples: &[f64]) -> (f64, f64) {
     (mean, std)
 }
 
+
+/// A simple wrapper around tokio::time::Interval to make
+/// getting the actual `elapsed()` time easy.
+struct Timer {
+    interval: time::Interval,
+    prev: time::Instant,
+}
+
+impl Timer {
+    async fn new(dur: Duration) -> Self {
+        let mut interval = time::interval(dur);
+        // First is instant
+        let prev = interval.tick().await;
+        Self {
+            interval,
+            prev
+        }
+    }
+
+    async fn tick(&mut self) -> Duration {
+        let new = self.interval.tick().await;
+        let elapsed = self.prev.elapsed();
+        self.prev = new;
+
+        elapsed
+    }
+}
+
+fn plot(data: HashMap<Duration, Vec<f64>>) {
+    use plotly::{Plot, Scatter};
+    use plotly::common::Mode;
+
+    let mut plot = Plot::new();
+
+    for sample_interval in INTERVAL_SWEEP {
+        let d = data.get(&sample_interval).unwrap();
+        let d = d.clone();
+
+        let x: Vec<_> = (0..N).collect();
+        let trace = Scatter::new(x, d)
+            .name(format!("{sample_interval:?}"))
+            .mode(Mode::Lines);
+
+        plot.add_trace(trace);
+
+    }
+    plot.show();
+    plot.write_html("out.html");
+}
