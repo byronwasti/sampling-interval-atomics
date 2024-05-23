@@ -1,10 +1,13 @@
-use std::time::{Duration};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-use tracing_subscriber::FmtSubscriber;
-use tracing::info;
-use tokio::time;
+use rand_distr::{Distribution, SkewNormal};
 use std::collections::HashMap;
-use rand_distr::{SkewNormal, Distribution};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::time::Duration;
+use tokio::time;
+use tracing::info;
+use tracing_subscriber::FmtSubscriber;
 
 const N: usize = 100;
 
@@ -35,7 +38,10 @@ async fn main() {
     plot(data);
 }
 
-async fn collect_data(task_count: usize, delay: (Duration, Duration)) -> HashMap<Duration, Vec<f64>> {
+async fn collect_data(
+    task_count: usize,
+    delay: (Duration, Duration),
+) -> HashMap<Duration, Vec<f64>> {
     let s_atomic = Arc::new(AtomicU64::new(0));
     let mut handles = vec![];
 
@@ -61,12 +67,16 @@ async fn collect_data(task_count: usize, delay: (Duration, Duration)) -> HashMap
             s_vals.push(tps);
 
             if s_vals.len() >= N {
-                break
+                break;
             }
         }
 
         info!("{sample_interval:?}");
-        info!("s_vals: {:?}..{:?}", &s_vals[..5], &s_vals[s_vals.len() - 5..]);
+        info!(
+            "s_vals: {:?}..{:?}",
+            &s_vals[..5],
+            &s_vals[s_vals.len() - 5..]
+        );
 
         let (s_mean, s_std) = avg_tps(&s_vals);
         info!("s_tps: {s_mean}, std: {s_std}");
@@ -87,8 +97,7 @@ async fn collect_data(task_count: usize, delay: (Duration, Duration)) -> HashMap
 
 async fn task(delay: Duration, std: Duration, s_atomic: Arc<AtomicU64>) {
     loop {
-        let normal =
-            SkewNormal::new(delay.as_secs_f64(), std.as_secs_f64(), 20.).unwrap();
+        let normal = SkewNormal::new(delay.as_secs_f64(), std.as_secs_f64(), 20.).unwrap();
         let v: f64 = normal.sample(&mut rand::thread_rng()).max(0.);
         tokio::time::sleep(std::time::Duration::from_secs_f64(v)).await;
         //tokio::time::sleep(delay).await;
@@ -100,13 +109,10 @@ fn avg_tps(samples: &[f64]) -> (f64, f64) {
     let len = samples.len() as f64;
     let mean = samples.iter().sum::<f64>() / len;
 
-    let std = (samples.iter()
-        .map(|x| (x - mean).powi(2))
-        .sum::<f64>() / len).sqrt();
+    let std = (samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / len).sqrt();
 
     (mean, std)
 }
-
 
 /// A simple wrapper around tokio::time::Interval to make
 /// getting the actual `elapsed()` time easy.
@@ -120,10 +126,7 @@ impl Timer {
         let mut interval = time::interval(dur);
         // First is instant
         let prev = interval.tick().await;
-        Self {
-            interval,
-            prev
-        }
+        Self { interval, prev }
     }
 
     async fn tick(&mut self) -> Duration {
@@ -136,7 +139,11 @@ impl Timer {
 }
 
 fn plot(data: HashMap<Duration, Vec<f64>>) {
-    use plotly::{Plot, Scatter, Layout, layout::{Axis, Legend}, common::Mode};
+    use plotly::{
+        common::Mode,
+        layout::{Axis, Legend},
+        Layout, Plot, Scatter,
+    };
 
     let mut plot = Plot::new();
 
@@ -163,7 +170,6 @@ fn plot(data: HashMap<Duration, Vec<f64>>) {
 
         plot.add_trace(trace);
         plot.set_layout(layout);
-
     }
     plot.show();
     plot.write_html("out.html");
