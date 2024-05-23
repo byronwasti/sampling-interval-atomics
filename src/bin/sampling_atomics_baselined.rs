@@ -8,15 +8,16 @@ use tokio::time;
 use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
-const COLLECTION_DUR: Duration = Duration::from_secs(3);
+const COLLECTION_DUR: Duration = Duration::from_secs(10);
 const BASELINE_INTERVAL: Duration = Duration::from_millis(1000);
 
-type DATA = Vec<(Duration, (Vec<(Duration, f64)>, Vec<(Duration, f64)>))>;
+type Data = Vec<(Duration, (Vec<(Duration, f64)>, Vec<(Duration, f64)>))>;
 
 #[tokio::main]
 async fn main() {
     FmtSubscriber::builder().init();
 
+    /*
     collect_and_plot_timeseries(
         100,
         //(Duration::from_millis(10), Duration::from_millis(4)),
@@ -31,6 +32,45 @@ async fn main() {
         false
     )
     .await;
+    */
+
+    collect_and_plot_error().await;
+}
+
+async fn collect_and_plot_error() {
+    let vars = [
+        (Duration::from_millis(10), Duration::from_millis(4), 100),
+        (Duration::from_millis(10), Duration::from_millis(4), 500),
+        (Duration::from_micros(200), Duration::from_micros(80), 100),
+        (Duration::from_micros(200), Duration::from_micros(80), 500),
+        (Duration::from_micros(10), Duration::from_micros(4), 100),
+        (Duration::from_micros(10), Duration::from_micros(4), 500),
+    ];
+    let intervals = [
+        Duration::from_millis(500),
+        Duration::from_millis(350),
+        Duration::from_millis(200),
+        Duration::from_millis(100),
+        Duration::from_millis(50),
+        Duration::from_millis(25),
+        Duration::from_millis(10),
+        Duration::from_millis(1),
+        Duration::from_micros(500),
+        Duration::from_micros(100),
+    ];
+
+    let mut datas = vec![];
+    for (delay, noise, task_count) in vars {
+        let data = collect_data(
+            task_count,
+            (delay, noise),
+            &intervals,
+        ).await;
+
+        datas.push((delay, task_count, data));
+    }
+
+    plot_errors(&datas);
 }
 
 async fn collect_and_plot_timeseries(
@@ -53,7 +93,7 @@ async fn collect_data(
     task_count: usize,
     delay: (Duration, Duration),
     intervals: &[Duration],
-) -> DATA {
+) -> Data {
     let s_atomic = Arc::new(AtomicU64::new(0));
     let b_atomic = Arc::new(AtomicU64::new(0));
     let mut handles = vec![];
@@ -192,7 +232,7 @@ impl Timer {
     }
 }
 
-fn plot_timeseries(task_count: usize, delay: Duration, data: &DATA, baseline: bool) {
+fn plot_timeseries(task_count: usize, delay: Duration, data: &Data, baseline: bool) {
     use plotly::{
         common::{Mode, Title},
         layout::{Axis, Legend},
@@ -206,7 +246,7 @@ fn plot_timeseries(task_count: usize, delay: Duration, data: &DATA, baseline: bo
             .iter()
             .skip(2)
             .map(|(x, y)| (x.as_secs_f64(), *y))
-            .unzip::<f64, f64, _, _>();
+            .unzip();
         let trace = Scatter::new(x, y)
             .name(format!("{sample_interval:?}"))
             .mode(Mode::Lines);
@@ -217,7 +257,7 @@ fn plot_timeseries(task_count: usize, delay: Duration, data: &DATA, baseline: bo
             let (x, y): (Vec<_>, Vec<_>) = b_vals
                 .iter()
                 .map(|(x, y)| (x.as_secs_f64(), *y))
-                .unzip::<f64, f64, _, _>();
+                .unzip();
             let trace = Scatter::new(x, y)
                 .name(format!("{sample_interval:?} (baseline)"))
                 .mode(Mode::Lines);
@@ -236,7 +276,7 @@ fn plot_timeseries(task_count: usize, delay: Duration, data: &DATA, baseline: bo
     plot.write_html("out.html");
 }
 
-fn tables_timeseries(data: &DATA, baseline: bool) {
+fn tables_timeseries(data: &Data, baseline: bool) {
     println!("| Interval | Mean TPS (μ) | Std (σ) | Error |");
     println!("| --- | --- | --- | --- |");
 
@@ -252,4 +292,43 @@ fn tables_timeseries(data: &DATA, baseline: bool) {
             println!("| {sample_interval:?} (baseline) | {b_mean:.2}| {b_std:.2}| |");
         }
     }
+}
+
+fn plot_errors(data: &[(Duration, usize, Data)]) {
+    use plotly::{
+        common::{Mode, Title},
+        layout::{Axis, Legend},
+        Layout, Plot, Scatter,
+    };
+
+    let mut plot = Plot::new();
+
+    for (delay, task_count, series) in data {
+        let (x, y): (Vec<f64>, Vec<f64>) = series
+            .iter()
+            .map(|(interval, (s_vals, b_vals))| {
+                let (s_tps, _) = avg_tps(&s_vals);
+                let (b_tps, _) = avg_tps(&b_vals);
+
+                let y = (b_tps - s_tps) / b_tps * 100.;
+                let x = interval.as_secs_f64();
+                (x, y)
+            })
+            .unzip();
+    
+        let trace = Scatter::new(x, y)
+            .name(format!("{task_count} Tasks, {delay:?} Delay"))
+            .mode(Mode::Lines);
+        plot.add_trace(trace);
+    }
+
+    let title = format!("Atomic Sampling Interval Error Rates");
+    let layout = Layout::new()
+        .title(Title::new(&title))
+        .y_axis(Axis::new().title("Percent Error".into()))
+        .x_axis(Axis::new().title("Sampling Interval".into()))
+        .legend(Legend::new().title("Task Count & Delay".into()));
+    plot.set_layout(layout);
+    plot.show();
+    plot.write_html("out.html");
 }
