@@ -39,6 +39,10 @@ async fn main() {
 
 async fn collect_and_plot_error() {
     let vars = [
+        (Duration::from_millis(500), Duration::from_millis(100), 100),
+        (Duration::from_millis(500), Duration::from_millis(100), 500),
+        (Duration::from_millis(100), Duration::from_millis(40), 100),
+        (Duration::from_millis(100), Duration::from_millis(40), 500),
         (Duration::from_millis(10), Duration::from_millis(4), 100),
         (Duration::from_millis(10), Duration::from_millis(4), 500),
         (Duration::from_micros(200), Duration::from_micros(80), 100),
