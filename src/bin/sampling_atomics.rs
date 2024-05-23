@@ -9,9 +9,14 @@ use rand_distr::{SkewNormal, Distribution};
 const N: usize = 100;
 
 const INTERVAL_SWEEP: [Duration; 4] = [
+    //Duration::from_millis(5000),
     Duration::from_millis(1000),
     Duration::from_millis(500),
+    //Duration::from_millis(200),
     Duration::from_millis(100),
+    //Duration::from_millis(50),
+    //Duration::from_millis(20),
+    //Duration::from_millis(15),
     Duration::from_millis(10),
     //Duration::from_millis(1),
     //Duration::from_micros(100),
@@ -24,7 +29,9 @@ const INTERVAL_SWEEP: [Duration; 4] = [
 async fn main() {
     FmtSubscriber::builder().init();
 
-    let data = collect_data(100, (Duration::from_millis(10), Duration::from_millis(4))).await;
+    //let data = collect_data(100, (Duration::from_millis(800), Duration::from_millis(600))).await;
+    //let data = collect_data(1000, (Duration::from_millis(10), Duration::from_millis(4))).await;
+    let data = collect_data(100, (Duration::from_micros(10), Duration::from_micros(4))).await;
     plot(data);
 }
 
@@ -42,13 +49,10 @@ async fn collect_data(task_count: usize, delay: (Duration, Duration)) -> HashMap
 
     let mut data = HashMap::new();
     for sample_interval in INTERVAL_SWEEP {
+        let mut s_vals = vec![];
         // NOTE: Have to reset the atomics otherwise we get some weird data issues.
         s_atomic.store(0, Ordering::Relaxed);
-
         let mut s_timer = Timer::new(sample_interval).await;
-
-        let mut s_vals = vec![];
-
         loop {
             let elapsed = s_timer.tick().await;
 
@@ -87,6 +91,7 @@ async fn task(delay: Duration, std: Duration, s_atomic: Arc<AtomicU64>) {
             SkewNormal::new(delay.as_secs_f64(), std.as_secs_f64(), 20.).unwrap();
         let v: f64 = normal.sample(&mut rand::thread_rng()).max(0.);
         tokio::time::sleep(std::time::Duration::from_secs_f64(v)).await;
+        //tokio::time::sleep(delay).await;
         s_atomic.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -131,21 +136,33 @@ impl Timer {
 }
 
 fn plot(data: HashMap<Duration, Vec<f64>>) {
-    use plotly::{Plot, Scatter};
-    use plotly::common::Mode;
+    use plotly::{Plot, Scatter, Layout, layout::{Axis, Legend}, common::Mode};
 
     let mut plot = Plot::new();
 
+    println!("| Interval | Mean TPS (μ) | Std (σ) |");
+    println!("| --- | --- | --- |");
     for sample_interval in INTERVAL_SWEEP {
         let d = data.get(&sample_interval).unwrap();
         let d = d.clone();
+
+        let (mean, std) = avg_tps(&d);
+
+        println!("| {sample_interval:?} | {mean:.2}| {std:.2}|");
 
         let x: Vec<_> = (0..N).collect();
         let trace = Scatter::new(x, d)
             .name(format!("{sample_interval:?}"))
             .mode(Mode::Lines);
 
+        let layout = Layout::new()
+            .title("100 Tasks, 10us Delay with SkewNormal Noise".into())
+            .y_axis(Axis::new().title("Measured TPS".into()))
+            .x_axis(Axis::new().title("Samples".into()))
+            .legend(Legend::new().title("Sampling Interval".into()));
+
         plot.add_trace(trace);
+        plot.set_layout(layout);
 
     }
     plot.show();
